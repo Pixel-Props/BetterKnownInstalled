@@ -165,8 +165,8 @@ process_xml() {
 
   # Rotate backups
   ui_print "Rotating backups..."
-  rotate_files "${base_name_no_ext}*_$CURRENT_TIMESTAMP.xml" "$MAX_BACKUP_FILES"
-  rotate_files "${base_name_no_ext}*_$CURRENT_TIMESTAMP.abxml" "$MAX_BACKUP_FILES"
+  rotate_files "${base_name_no_ext}_*.xml" "$MAX_BACKUP_FILES"
+  rotate_files "${base_name_no_ext}_*.abxml" "$MAX_BACKUP_FILES"
 
   # Replace and verify based on original file type
   if boolval "$is_text_xml"; then

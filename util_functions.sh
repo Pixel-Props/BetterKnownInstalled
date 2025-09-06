@@ -161,31 +161,38 @@ text_to_abx() {
   return "$result"
 }
 
-# Function to rotate files, keeping the specified number of backups with enhanced logging
+# Function to rotate files, keeping the specified number of backups
+# This function should be called BEFORE creating a new backup file
 rotate_files() {
   file_pattern="$1"
   max_files="$2"
 
   ui_print "Rotating files matching pattern: $file_pattern, keeping maximum $max_files files."
 
-  set -- "$(find "$BACKUP_DIR" -maxdepth 1 -name "$file_pattern" -type f | sort)"
+  # Get list of files sorted by name (oldest first due to timestamp naming)
+  files_to_check=$(find "$BACKUP_DIR" -maxdepth 1 -name "$file_pattern" -type f | sort)
 
-  num_files=$#
+  if [ -z "$files_to_check" ]; then
+    ui_print "No files found matching the pattern."
+    return 0
+  fi
 
+  # Count files
+  num_files=$(echo "$files_to_check" | wc -l)
   ui_print "Found $num_files files matching the pattern."
 
-  if [ "$num_files" -gt "$max_files" ]; then
-    files_to_delete=$((num_files - max_files))
-    ui_print "Need to delete $files_to_delete old files."
-    i=1
-    for file in "$@"; do
-      if [ "$i" -le "$files_to_delete" ]; then
+  # Calculate how many files to delete, accounting for the new file that will be created
+  # We need to keep (max_files - 1) existing files to make room for the new one
+  if [ "$num_files" -ge "$max_files" ]; then
+    files_to_delete=$((num_files - max_files + 1))
+    ui_print "Need to delete $files_to_delete old files to make room for new backup."
+
+    # Delete the oldest files (first in sorted list)
+    echo "$files_to_check" | head -n "$files_to_delete" | while IFS= read -r file; do
+      if [ -n "$file" ] && [ -f "$file" ]; then
         ui_print "Deleting old backup: $file"
         rm "$file"
-      else
-        break
       fi
-      i=$((i + 1))
     done
   else
     ui_print "No files to delete. Number of files is within the limit."
