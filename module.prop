@@ -1,6 +1,6 @@
 id=BetterKnownInstalled
 name=BetterKnownInstalled (BKI)
-version=v1.5.0
-versionCode=1500
+version=v1.5.1
+versionCode=1510
 author=@T3SL4
-description=Patching (installer, installerUid, installInitiator, installOriginator) in packages.xml and cleaning packages-warnings.xml for defeating DroidGuard: UNKNOWN_INSTALLED
+description=Patching (installer, installerUid, installInitiator, installOriginator) in packages.xml for defeating DroidGuard: UNKNOWN_INSTALLED
