@@ -6,13 +6,14 @@ This Magisk/KernelSU/APatch module patches `packages.xml` to address DroidGuard'
 
 ## Description
 
-DroidGuard uses several attributes within the `packages.xml` file to track app installations. This module modifies these attributes on **non-system** packages to ensure that apps are recognized as properly installed, preventing the `UNKNOWN_INSTALLED` status and related problems. Specifically, it:
+DroidGuard uses several attributes within the `packages.xml` file to track app installations. This module modifies these attributes on **user-installed apps** to ensure that apps are recognized as properly installed, preventing the `UNKNOWN_INSTALLED` status and related problems. Specifically, it:
 
-* Sets the **`installer`**, **`installInitiator`**, and **`installerUid`** attributes within each `<package>` tag in `packages.xml` to `com.android.vending` (the Google Play Store's package name identifier) and the corresponding user ID. This helps DroidGuard recognize the installation source as legitimate.
+* Targets only packages with `codePath` under **`/data/app/`**, skipping everything else (system, vendor, APEX, etc.).
+* Still skips packages explicitly flagged with **`system="true"`** or **`system="1"`** as a safety guard.
+* Sets the **`installer`**, **`installInitiator`**, and **`installerUid`** attributes within each targeted `<package>` tag to `com.android.vending` (the Google Play Store's package name identifier) and the corresponding user ID. This helps DroidGuard recognize the installation source as legitimate.
 * Removes the **`installOriginator`** attribute, as it can sometimes cause conflicts.
 * Removes the **`isOrphaned`** and **`installInitiatorUninstalled`** attributes if their values are set to `true` or `1`, as these can flag an app as incorrectly installed.
-* Changes the **`packageSource`** attribute to the constant value `2` (which represents **`PACKAGE_SOURCE_STORE`**), adding it when missing.
-* **Skips system packages** (`system="true"` or `system="1"`) to avoid incorrectly marking pre-installed OEM apps as Play Store installs.
+* Changes the **`packageSource`** attribute to the constant value `2` (which represents **`PACKAGE_SOURCE_STORE`**), **adding it when missing** or replacing it when set to another value.
 
 This module uses `abx2xml` and `xml2abx` binaries if not in your system by default (provided by [rhythmcache/android-xml-converter](https://github.com/rhythmcache/android-xml-converter)) to convert between binary and text XML formats, as `packages.xml` is typically in binary XML format. The module includes architecture-specific binaries for `aarch64`, `armv7aeabi`, `i686`, `x86_64`, and `riscv64`.
 

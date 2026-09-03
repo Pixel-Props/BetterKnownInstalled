@@ -103,15 +103,10 @@ process_xml() {
 
   ui_print "Starting to modify XML with sed..."
 
-  # DRY system-app skip guards — used in every sed pass
+  # DRY: only process user apps in /data/app/, skip everything else
   SYS_SKIP='
     /^<package /!b
-    /codePath="\/system\//b
-    /codePath="\/vendor\//b
-    /codePath="\/product\//b
-    /codePath="\/odm\//b
-    /codePath="\/oem\//b
-    /codePath="\/apex\//b
+    /codePath="\/data\/app\//!b
     /system="true"/b
     /system="1"/b
   '
@@ -158,14 +153,18 @@ process_xml() {
   # Pass 5: remove installOriginator
   sed -i -E -e "$SYS_SKIP" -e 's/ *installOriginator="[^"]*"//g' "$xml_temp"
 
-  # Pass 6: remove isOrphaned="true"
-  sed -i -E -e "$SYS_SKIP" -e 's/isOrphaned="true"//g' "$xml_temp"
+  # Pass 6: remove isOrphaned if true or 1
+  sed -i -E -e "$SYS_SKIP" -e 's/isOrphaned="(true|1)"//g' "$xml_temp"
 
-  # Pass 7: remove installInitiatorUninstalled="true"
-  sed -i -E -e "$SYS_SKIP" -e 's/installInitiatorUninstalled="true"//g' "$xml_temp"
+  # Pass 7: remove installInitiatorUninstalled if true or 1
+  sed -i -E -e "$SYS_SKIP" -e 's/installInitiatorUninstalled="(true|1)"//g' "$xml_temp"
 
-  # Pass 8: set packageSource to 2
-  sed -i -E -e "$SYS_SKIP" -e 's/packageSource="[^2]"/packageSource="2"/g' "$xml_temp"
+
+  # Pass 8: set packageSource to 2 (replace or add)
+  sed -i -E -e "$SYS_SKIP" \
+    -e 's/packageSource="[^2]"/packageSource="2"/g' \
+    -e '/packageSource=/! s/(<package [^>]*)/ \1 packageSource="2"/g' \
+    "$xml_temp"
 
   # Collapse back to single line (preserves original format)
   tr '\n' ' ' < "$xml_temp" | sed 's/> </></g' > "${xml_temp}.tmp"
