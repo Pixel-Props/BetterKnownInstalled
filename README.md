@@ -21,10 +21,24 @@ This module uses `abx2xml` and `xml2abx` binaries if not in your system by defau
 
 ---
 
+## How it works (v1.6.0)
+
+Instead of blindly patching every app on every boot, BKI now maintains a lightweight **`metadata.db`** in the module directory.
+
+| Boot type | What happens |
+|---|---|
+| **First boot** | Scans `packages.xml`, builds `metadata.db` with original values for every user app (`installer`, `installerUid`, `installInitiator`, `packageSource`, `installOriginator`, `isOrphaned`, `installInitiatorUninstalled`). Then applies patches. |
+| **Subsequent boots** | Prunes removed apps from the DB, detects newly installed apps, appends their original values, and re-applies patches. Only touches changed data — much faster. |
+| **Uninstall** | Reads `metadata.db` and restores the **exact original values** per app, then deletes the DB. |
+
+A single **`packages.xml.safety`** copy is kept in the module directory for crash-recovery only.
+
+---
+
 ## Installation
 
-1.  Install this module through Magisk Manager, KernelSU, or APatch.
-2.  Reboot your device for the changes to take effect.
+1. Install this module through Magisk Manager, KernelSU, or APatch.
+2. Reboot your device for the changes to take effect.
 
 **Important:** Installation from recovery is **not** supported. You **must** install this module from within a running Android environment (Magisk/KernelSU/APatch).
 
@@ -36,9 +50,9 @@ This module works automatically upon installation and reboot. No further user in
 
 ---
 
-## Backups
+## Uninstall
 
-The module creates backups of the original `packages.xml` file in `/data/adb/modules/BetterKnownInstalled/backup/` before making any changes. Up to five backups are kept, including the latest one. The backups are timestamped for easy identification.
+When you remove the module and reboot, `uninstall.sh` automatically restores each app's original installation metadata from `metadata.db` before the module is cleaned up. If the DB is missing (e.g., manually deleted), restoration cannot occur and the patched values will remain in `packages.xml`.
 
 ---
 

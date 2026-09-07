@@ -28,11 +28,39 @@ ui_print() {
 
   # Check log file size and rotate if necessary
   if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -ge "$MAX_LOG_SIZE" ]; then
-    rotate_files "$LOG_FILE" "$MAX_LOG_FILES"
+    rotate_log
   fi
 
   # Write to log file
   echo "$log_entry" >>"$LOG_FILE"
+}
+
+rotate_log() {
+  i=$MAX_LOG_FILES
+  while [ "$i" -gt 1 ]; do
+    prev=$((i - 1))
+    [ -f "$LOG_FILE.$prev" ] && mv -f "$LOG_FILE.$prev" "$LOG_FILE.$i"
+    i=$prev
+  done
+  [ -f "$LOG_FILE" ] && mv -f "$LOG_FILE" "$LOG_FILE.1"
+}
+
+# Wait for /data to be mounted and packages.xml accessible
+wait_for_data() {
+  max_wait_time=30
+  wait_interval=1
+  i=0
+  while [ "$i" -lt "$max_wait_time" ]; do
+    if mount | grep -q "/data " && [ -f "$PACKAGES_XML" ]; then
+      ui_print "/data is mounted and accessible."
+      return 0
+    fi
+    ui_print "Waiting for /data to become accessible..."
+    sleep "$wait_interval"
+    i=$((i + wait_interval))
+  done
+  ui_print "Error: /data or $PACKAGES_XML did not become accessible within $max_wait_time seconds."
+  return 1
 }
 
 # Get the architecture
@@ -45,6 +73,7 @@ get_arch() {
   "arm64-v8a") echo "aarch64" ;;
   "x86") echo "i686" ;;
   "x86_64") echo "x86_64" ;;
+  "riscv64") echo "riscv64" ;;
   *)
     # Handle cases where arch is not found or not supported
     ui_print "Error: Could not determine architecture or architecture not supported: $arch"
@@ -88,14 +117,11 @@ abx_to_text() {
   fi
 
   # Use abx2xml for conversion
-  # Pipe stdout directly to a while loop, handling line by line
-  # stderr is combined with stdout
   abx2xml "$input_file" "$output_file" 2>&1 | while read -r line; do
     ui_print "abx2xml: $line"
   done
   result=$?
 
-  # Print a generic error message if abx2xml failed
   if [ $result -ne 0 ]; then
     ui_print "Error: Failed to convert '$input_file'. Check abx2xml output for potential errors."
   fi
@@ -142,14 +168,11 @@ text_to_abx() {
   fi
 
   # Use xml2abx for conversion
-  # Pipe stdout directly to a while loop, handling line by line
-  # stderr is combined with stdout
   xml2abx "$input_file" "$output_file" 2>&1 | while read -r line; do
     ui_print "xml2abx: $line"
   done
   result=$?
 
-  # Print a generic error message if xml2abx failed
   if [ $result -ne 0 ]; then
     ui_print "Error: Failed to convert '$input_file'. Check xml2abx output for potential errors."
   fi
@@ -159,71 +182,4 @@ text_to_abx() {
   fi
 
   return "$result"
-}
-
-# Function to rotate files, keeping the specified number of backups
-# This function should be called BEFORE creating a new backup file
-rotate_files() {
-  file_pattern="$1"
-  max_files="$2"
-
-  ui_print "Rotating files matching pattern: $file_pattern, keeping maximum $max_files files."
-
-  # Get list of files sorted by name (oldest first due to timestamp naming)
-  files_to_check=$(find "$BACKUP_DIR" -maxdepth 1 -name "$file_pattern" -type f | sort)
-
-  if [ -z "$files_to_check" ]; then
-    ui_print "No files found matching the pattern."
-    return 0
-  fi
-
-  # Count files
-  num_files=$(echo "$files_to_check" | wc -l)
-  ui_print "Found $num_files files matching the pattern."
-
-  # Calculate how many files to delete, accounting for the new file that will be created
-  # We need to keep (max_files - 1) existing files to make room for the new one
-  if [ "$num_files" -ge "$max_files" ]; then
-    files_to_delete=$((num_files - max_files + 1))
-    ui_print "Need to delete $files_to_delete old files to make room for new backup."
-
-    # Delete the oldest files (first in sorted list)
-    echo "$files_to_check" | head -n "$files_to_delete" | while IFS= read -r file; do
-      if [ -n "$file" ] && [ -f "$file" ]; then
-        ui_print "Deleting old backup: $file"
-        rm "$file"
-      fi
-    done
-  else
-    ui_print "No files to delete. Number of files is within the limit."
-  fi
-}
-
-# Function to create a timestamped backup of a file using the script's timestamp
-backup_file() {
-  original_file="$1"
-  original_file_basename=$(basename "$original_file")
-  original_file_no_ext="${original_file_basename%.*}"
-  backup_type="$2"
-  backup_file="$BACKUP_DIR/${original_file_no_ext}_$CURRENT_TIMESTAMP.$backup_type"
-
-  ui_print "Preparing to back up '$original_file_basename' to '$backup_file'"
-
-  if [ ! -d "$BACKUP_DIR" ]; then
-    ui_print "Backup directory '$BACKUP_DIR' does not exist. Creating..."
-    mkdir -p "$BACKUP_DIR"
-  fi
-
-  ui_print "Rotating existing backups for $original_file_basename of type (.$backup_type)"
-  rotate_files "${original_file_no_ext}_*$backup_type" "$MAX_BACKUP_FILES" # Modified glob pattern
-
-  ui_print "Creating backup..."
-  if cp "$original_file" "$backup_file"; then # Check if cp was successful
-    ui_print "Backup created at '$backup_file'"
-    echo "$backup_file" # Return the backup file path
-    return 0            # Indicate success
-  else
-    ui_print "Error: Failed to create backup!"
-    return 1 # Indicate failure
-  fi
 }

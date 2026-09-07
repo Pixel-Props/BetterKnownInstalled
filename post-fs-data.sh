@@ -4,8 +4,7 @@ MODPATH="${0%/*}"
 MODNAME="${MODPATH##*/}"
 
 PACKAGES_XML="/data/system/packages.xml"
-BACKUP_DIR="$MODPATH/backup"
-MAX_BACKUP_FILES=4
+DB="$MODPATH/metadata.db"
 CURRENT_TIMESTAMP=$(date +%s)
 
 [ -z "$MODPATH" ] || ! echo "$MODPATH" | grep -q '/data/adb/modules/' &&
@@ -13,62 +12,30 @@ CURRENT_TIMESTAMP=$(date +%s)
 
 [ -f "$MODPATH/util_functions.sh" ] && . "$MODPATH/util_functions.sh" || abort "! util_functions.sh not found!"
 
-wait_for_data() {
- max_wait_time=30
- wait_interval=1
- i=0
- while [ "$i" -lt "$max_wait_time" ]; do
-   if mount | grep -q "/data " && [ -f "$PACKAGES_XML" ]; then
-     ui_print "/data is mounted and accessible."
-     return 0
-   fi
-   ui_print "Waiting for /data to become accessible..."
-   sleep "$wait_interval"
-   i=$((i + wait_interval))
- done
- ui_print "Error: /data or $PACKAGES_XML did not become accessible within $max_wait_time seconds."
- return 1
-}
-
 process_xml() {
   xml_file="$1"
   base_name=$(basename "$xml_file")
   base_name_no_ext="${base_name%.*}"
 
   xml_temp="$MODPATH/temp_${base_name_no_ext}_$CURRENT_TIMESTAMP.xml"
-  xml_backup_file="$BACKUP_DIR/${base_name_no_ext}_$CURRENT_TIMESTAMP.xml"
-  abxml_backup_file="$BACKUP_DIR/${base_name_no_ext}_$CURRENT_TIMESTAMP.abxml"
 
   ui_print "Starting to process XML file: $xml_file"
 
-  ui_print "Creating backup of $xml_file..."
-  backup_file_path=$(backup_file "$xml_file" "bak")
-  backup_status=$?
-
-  if [ $backup_status -eq 0 ]; then
-    ui_print "Backup file path: $backup_file_path"
-    abxml_original_backup_file="$backup_file_path"
-  else
-    ui_print "Error: backup_file failed."
-    return 1
-  fi
-
-  file_type=$(file -b "$abxml_original_backup_file")
+  # Determine format
+  file_type=$(file -b "$xml_file")
   is_text_xml=false
   if echo "$file_type" | grep -q -E "XML .* text|text"; then
     is_text_xml=true
   fi
 
-  ui_print "abxml_original_backup_file is: Text XML"
-
   if boolval "$is_text_xml"; then
-    ui_print "File is already text XML. Proceeding with modifications."
-    cp "$abxml_original_backup_file" "$xml_temp"
+    ui_print "File is text XML. Proceeding with modifications."
+    cp "$xml_file" "$xml_temp"
   else
-    ui_print "Converting ABX to text: $abxml_original_backup_file -> $xml_temp"
-    if ! abx_to_text "$abxml_original_backup_file" "$xml_temp"; then
+    ui_print "Converting ABX to text: $xml_file -> $xml_temp"
+    if ! abx_to_text "$xml_file" "$xml_temp"; then
       ui_print "Error: abx_to_text failed!"
-      cat "$abxml_original_backup_file" >"$MODPATH/abx_to_text_error_${base_name_no_ext}_$CURRENT_TIMESTAMP.abx"
+      cat "$xml_file" >"$MODPATH/abx_to_text_error_${base_name_no_ext}_$CURRENT_TIMESTAMP.abx"
       rm "$xml_temp" 2>/dev/null
       return 1
     fi
@@ -101,6 +68,92 @@ process_xml() {
 
   ui_print "Found userId for com.android.vending: $vending_uid"
 
+  # Normalize: split single-line XML so each <package ...> sits on its own line
+  sed -i 's/<package /\n<package /g' "$xml_temp"
+  sed -i '1{/^$/d}' "$xml_temp"
+
+  # --- v1.6.0 DB logic -------------------------------------------------------
+  if [ ! -f "$DB" ]; then
+    ui_print "First boot detected. Building metadata.db..."
+
+    # Safety: keep one text backup in case of corruption
+    cp -f "$xml_temp" "$MODPATH/packages.xml.safety"
+
+    awk '
+      /^<package / {
+        name = ""; codePath = ""; issystem = ""; installer = ""; installerUid = ""
+        installInitiator = ""; packageSource = ""; installOriginator = ""; isOrphaned = ""
+        installInitiatorUninstalled = ""
+
+        if (match($0, /name="[^"]*"/))       name = substr($0, RSTART+6, RLENGTH-7)
+        if (match($0, /codePath="[^"]*"/))    codePath = substr($0, RSTART+10, RLENGTH-11)
+        if (match($0, /system="[^"]*"/))      issystem = substr($0, RSTART+8, RLENGTH-9)
+        if (match($0, /installer="[^"]*"/))   installer = substr($0, RSTART+11, RLENGTH-12)
+        if (match($0, /installerUid="[^"]*"/)) installerUid = substr($0, RSTART+14, RLENGTH-15)
+        else if (match($0, /installerUid-int="[^"]*"/)) installerUid = substr($0, RSTART+18, RLENGTH-19)
+        if (match($0, /installInitiator="[^"]*"/)) installInitiator = substr($0, RSTART+18, RLENGTH-19)
+        if (match($0, /packageSource="[^"]*"/)) packageSource = substr($0, RSTART+15, RLENGTH-16)
+        if (match($0, /installOriginator="[^"]*"/)) installOriginator = substr($0, RSTART+19, RLENGTH-20)
+        if (match($0, /isOrphaned="[^"]*"/))  isOrphaned = substr($0, RSTART+12, RLENGTH-13)
+        if (match($0, /installInitiatorUninstalled="[^"]*"/)) installInitiatorUninstalled = substr($0, RSTART+29, RLENGTH-30)
+
+        if (codePath ~ /\/data\/app\// && issystem != "true" && issystem != "1") {
+          print name "|" installer "|" installerUid "|" installInitiator "|" packageSource "|" installOriginator "|" isOrphaned "|" installInitiatorUninstalled
+        }
+      }
+    ' "$xml_temp" > "$DB.tmp"
+    mv -f "$DB.tmp" "$DB"
+
+    db_entries=$(grep -c -v '^#' "$DB" 2>/dev/null || echo 0)
+    ui_print "Metadata DB built with $db_entries entries."
+  else
+    ui_print "Subsequent boot. Pruning and updating metadata.db..."
+
+    # Prune: remove DB entries for packages no longer in packages.xml
+    grep -E '^<package ' "$xml_temp" | grep -oE 'name="[^"]*"' | cut -d'"' -f2 | sort -u > "$MODPATH/.current_pkgs"
+    awk -F'|' '
+      BEGIN { pkgs = ARGV[1] }
+      FILENAME == pkgs { current[$1] = 1; next }
+      !/^#/ && ($1 in current)
+    ' "$MODPATH/.current_pkgs" "$DB" > "$DB.tmp"
+    mv -f "$DB.tmp" "$DB"
+    rm -f "$MODPATH/.current_pkgs"
+
+    pruned=$(grep -c -v '^#' "$DB" 2>/dev/null || echo 0)
+    ui_print "DB pruned. Entries: $pruned"
+
+    # Detect new packages and append to DB
+    awk -F'|' '
+      BEGIN { db = ARGV[1] }
+      FILENAME == db { if ($0 !~ /^#/) seen[$1] = 1; next }
+      /^<package / {
+        name = ""; codePath = ""; issystem = ""; installer = ""; installerUid = ""
+        installInitiator = ""; packageSource = ""; installOriginator = ""; isOrphaned = ""
+        installInitiatorUninstalled = ""
+
+        if (match($0, /name="[^"]*"/))       name = substr($0, RSTART+6, RLENGTH-7)
+        if (match($0, /codePath="[^"]*"/))    codePath = substr($0, RSTART+10, RLENGTH-11)
+        if (match($0, /system="[^"]*"/))      issystem = substr($0, RSTART+8, RLENGTH-9)
+        if (match($0, /installer="[^"]*"/))   installer = substr($0, RSTART+11, RLENGTH-12)
+        if (match($0, /installerUid="[^"]*"/)) installerUid = substr($0, RSTART+14, RLENGTH-15)
+        else if (match($0, /installerUid-int="[^"]*"/)) installerUid = substr($0, RSTART+18, RLENGTH-19)
+        if (match($0, /installInitiator="[^"]*"/)) installInitiator = substr($0, RSTART+18, RLENGTH-19)
+        if (match($0, /packageSource="[^"]*"/)) packageSource = substr($0, RSTART+15, RLENGTH-16)
+        if (match($0, /installOriginator="[^"]*"/)) installOriginator = substr($0, RSTART+19, RLENGTH-20)
+        if (match($0, /isOrphaned="[^"]*"/))  isOrphaned = substr($0, RSTART+12, RLENGTH-13)
+        if (match($0, /installInitiatorUninstalled="[^"]*"/)) installInitiatorUninstalled = substr($0, RSTART+29, RLENGTH-30)
+
+        if (codePath ~ /\/data\/app\// && issystem != "true" && issystem != "1" && !(name in seen)) {
+          print name "|" installer "|" installerUid "|" installInitiator "|" packageSource "|" installOriginator "|" isOrphaned "|" installInitiatorUninstalled
+        }
+      }
+    ' "$DB" "$xml_temp" >> "$DB"
+
+    total=$(grep -c -v '^#' "$DB" 2>/dev/null || echo 0)
+    ui_print "New packages scanned. Total DB entries: $total"
+  fi
+  # --- End DB logic ----------------------------------------------------------
+
   ui_print "Starting to modify XML with sed..."
 
   # DRY: only process user apps in /data/app/, skip everything else
@@ -110,10 +163,6 @@ process_xml() {
     /system="true"/b
     /system="1"/b
   '
-
-  # Normalize: split single-line XML so each <package ...> sits on its own line
-  sed -i 's/<package /\n<package /g' "$xml_temp"
-  sed -i '1{/^$/d}' "$xml_temp"
 
   # Pass 1: dedup installer, installInitiator, installerUid
   sed -i -E \
@@ -159,7 +208,6 @@ process_xml() {
   # Pass 7: remove installInitiatorUninstalled if true or 1
   sed -i -E -e "$SYS_SKIP" -e 's/installInitiatorUninstalled="(true|1)"//g' "$xml_temp"
 
-
   # Pass 8: set packageSource to 2 (replace or add)
   sed -i -E -e "$SYS_SKIP" \
     -e 's/packageSource="[^2]"/packageSource="2"/g' \
@@ -170,59 +218,64 @@ process_xml() {
   tr '\n' ' ' < "$xml_temp" | sed 's/> </></g' > "${xml_temp}.tmp"
   mv "${xml_temp}.tmp" "$xml_temp"
 
-  ui_print "Rotating backups..."
-  rotate_files "${base_name_no_ext}_*.xml" "$MAX_BACKUP_FILES"
-  rotate_files "${base_name_no_ext}_*.abxml" "$MAX_BACKUP_FILES"
-
   if boolval "$is_text_xml"; then
     ui_print "Original file was text XML. Replacing with modified text XML."
-    cp "$xml_temp" "$xml_backup_file"
-    replacement_source="$xml_backup_file"
+    replacement_source="$xml_temp"
   else
     ui_print "Original file was ABX. Converting text to ABX before replacing."
-    text_to_abx "$xml_temp" "$abxml_backup_file"
-    replacement_source="$abxml_backup_file"
+    abxml_out="$MODPATH/temp_${base_name_no_ext}_restored_$CURRENT_TIMESTAMP.abxml"
+    if ! text_to_abx "$xml_temp" "$abxml_out"; then
+      ui_print "Error: text_to_abx failed!"
+      rm "$xml_temp" "$abxml_out" 2>/dev/null
+      return 1
+    fi
+    replacement_source="$abxml_out"
   fi
 
   ui_print "Replacing original file: $xml_file <- $replacement_source"
-  if ! cp -f "$replacement_source" "$xml_file"; then
-    ui_print "Error: Failed to copy modified file. Permissions issue?"
-    rm "$xml_temp" 2>/dev/null
+  cat "$replacement_source" > "$xml_file.tmp" || {
+    ui_print "Error: Failed to stage modified file."
+    rm "$xml_temp" "$xml_file.tmp" "$abxml_out" 2>/dev/null
     return 1
-  fi
+  }
+  mv -f "$xml_file.tmp" "$xml_file" || {
+    ui_print "Error: Failed to atomically replace $xml_file."
+    rm "$xml_temp" "$abxml_out" 2>/dev/null
+    return 1
+  }
 
   ui_print "Verifying replacement: $xml_file vs $replacement_source"
   if ! cmp -s "$xml_file" "$replacement_source"; then
     ui_print "Error: Verification failed after replacement!"
     diff -u "$xml_file" "$replacement_source" >"$MODPATH/diff_error_${base_name_no_ext}_$CURRENT_TIMESTAMP.diff"
-    rm "$xml_temp" 2>/dev/null
+    rm "$xml_temp" "$abxml_out" 2>/dev/null
     return 1
   fi
 
   ui_print "Cleaning up temporary files..."
-  rm "$xml_temp" 2>/dev/null
+  rm "$xml_temp" "$abxml_out" 2>/dev/null
 
   ui_print "Successfully processed XML file: $xml_file"
   return 0
 }
 
 if ! command_exists abx2xml || ! command_exists xml2abx; then
- ui_print "Error: abx2xml and xml2abx are required. Installing from addons..."
- for addon in "$MODPATH"/common/addon/*/install.sh; do
-   if [ -f "$addon" ]; then
-     addon_basedirname=$(basename "$(dirname "$addon")")
-     ui_print "Running $addon_basedirname addon..."
-     . "$addon"
-     if [ $? -ne 0 ]; then
-       ui_print "Error: Addon $addon_basedirname failed to install."
-       exit 1
-     fi
-   fi
- done
- if ! command_exists abx2xml || ! command_exists xml2abx; then
-   ui_print "Error: abx2xml and xml2abx are still missing after running addons."
-   exit 1
- fi
+  ui_print "Error: abx2xml and xml2abx are required. Installing from addons..."
+  for addon in "$MODPATH"/common/addon/*/install.sh; do
+    if [ -f "$addon" ]; then
+      addon_basedirname=$(basename "$(dirname "$addon")")
+      ui_print "Running $addon_basedirname addon..."
+      . "$addon"
+      if [ $? -ne 0 ]; then
+        ui_print "Error: Addon $addon_basedirname failed to install."
+        exit 1
+      fi
+    fi
+  done
+  if ! command_exists abx2xml || ! command_exists xml2abx; then
+    ui_print "Error: abx2xml and xml2abx are still missing after running addons."
+    exit 1
+  fi
 fi
 
 wait_for_data
@@ -232,16 +285,15 @@ process_xml "$PACKAGES_XML"
 
 ui_print "Restoring permissions and SELinux context..."
 for file in "$PACKAGES_XML"; do
- chown system:system "$file"
- chmod 640 "$file"
- if command_exists restorecon; then
-   restorecon "$file"
- fi
+  chown system:system "$file"
+  chmod 640 "$file"
+  if command_exists restorecon; then
+    restorecon "$file"
+  fi
 done
 
 ui_print "----------------------------------------"
 ui_print "Process completed successfully."
-ui_print "Original and modified files backed up to: $BACKUP_DIR"
 ui_print "It is recommended to reboot your device for changes to take effect."
 ui_print "by @T3SL4"
 ui_print "----------------------------------------"
