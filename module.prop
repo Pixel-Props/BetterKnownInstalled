@@ -1,6 +1,7 @@
 id=BetterKnownInstalled
 name=BetterKnownInstalled (BKI)
-version=v1.6.0
-versionCode=1600
+version=v1.6.1
+versionCode=1610
 author=@T3SL4
 description=Patching (installer, installerUid, installInitiator, installOriginator) in packages.xml for defeating DroidGuard: UNKNOWN_INSTALLED
+updateJson=https://raw.githubusercontent.com/Pixel-Props/BetterKnownInstalled/main/update.json

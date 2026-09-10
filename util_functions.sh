@@ -1,4 +1,27 @@
 #!/system/bin/busybox sh
+# BetterKnownInstalled (BKI) — util_functions.sh v1.6.1
+#
+# Shared environment and helper functions for the BKI Magisk module.
+# Sourced (never executed) by post-fs-data.sh and uninstall.sh immediately
+# after their top-level globals are set.
+#
+# What lives here:
+#   - Logging / lifecycle : ui_print, abort, boolval, command_exists
+#   - Environment         : wait_for_data, get_arch
+#   - ABX tooling         : abx_to_text, text_to_abx, ensure_abx_tools
+#   - Filesystem          : restore_perms
+#
+# Contract for anyone editing this file:
+#   - Must stay POSIX / BusyBox-sh compatible: no bashisms, no arrays, no
+#     process substitution. It runs under `#!/system/bin/busybox sh`.
+#   - Define functions only; do not execute module logic at source time.
+#     (bki_debug.sh dot-sources the BKI FUNCTIONS sections of the caller
+#     scripts with the helpers stubbed, so keep side effects inside main().)
+#   - Functions may rely on the caller having set: MODPATH, PACKAGES_XML,
+#     DB, CURRENT_TIMESTAMP.
+#   - The bki_debug.sh harness stubs these helpers; anything new that touches
+#     hardware paths (mounts, /data, SELinux) should stay inside functions
+#     the harness never calls, or be stub-able.
 MODPATH="${0%/*}"
 
 LOG_FILE="$MODPATH/$MODNAME.log"
@@ -80,6 +103,43 @@ get_arch() {
     return 1
     ;;
   esac
+}
+
+# Function to restore permissions and SELinux context
+restore_perms() {
+  ui_print "Restoring permissions and SELinux context..."
+  for file in "$PACKAGES_XML"; do
+    [ -f "$file" ] || continue
+    chown system:system "$file"
+    chmod 640 "$file"
+    if command_exists restorecon; then
+      restorecon "$file"
+    fi
+  done
+}
+
+# Function to check if abx applets are available
+ensure_abx_tools() {
+  command_exists abx2xml && command_exists xml2abx && return 0
+
+  ui_print "Error: abx2xml and xml2abx are required. Installing from addons..."
+  for addon in "$MODPATH"/common/addon/*/install.sh; do
+    if [ -f "$addon" ]; then
+      addon_basedirname=$(basename "$(dirname "$addon")")
+      ui_print "Running $addon_basedirname addon..."
+      # shellcheck disable=SC1090
+      . "$addon"
+      if [ $? -ne 0 ]; then
+        ui_print "Error: Addon $addon_basedirname failed to install."
+        return 1
+      fi
+    fi
+  done
+
+  if ! command_exists abx2xml || ! command_exists xml2abx; then
+    ui_print "Error: abx2xml and xml2abx are still missing after running addons."
+    return 1
+  fi
 }
 
 # Function to convert binary XML to text XML

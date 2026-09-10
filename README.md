@@ -21,17 +21,29 @@ This module uses `abx2xml` and `xml2abx` binaries if not in your system by defau
 
 ---
 
-## How it works (v1.6.0)
+## How it works (v1.6.1)
 
-Instead of blindly patching every app on every boot, BKI now maintains a lightweight **`metadata.db`** in the module directory.
+Instead of blindly patching every app on every boot, BKI maintains a lightweight **`metadata.db`** in the module directory, and patches `packages.xml` with a **single streaming pass** that edits one `<package>` element at a time.
 
 | Boot type | What happens |
 |---|---|
 | **First boot** | Scans `packages.xml`, builds `metadata.db` with original values for every user app (`installer`, `installerUid`, `installInitiator`, `packageSource`, `installOriginator`, `isOrphaned`, `installInitiatorUninstalled`). Then applies patches. |
-| **Subsequent boots** | Prunes removed apps from the DB, detects newly installed apps, appends their original values, and re-applies patches. Only touches changed data — much faster. |
-| **Uninstall** | Reads `metadata.db` and restores the **exact original values** per app, then deletes the DB. |
+| **Subsequent boots** | Prunes removed apps from the DB, detects newly installed apps, appends their original values, and re-applies patches. The pre-split and patch are idempotent — repeated boots do not modify or grow the file further. |
+| **Uninstall** | Reads `metadata.db` and restores the **exact original values** per app (handling both text and binary XML, and typed `-int`/`-bool` attribute variants), verifies the result, then deletes the DB. |
 
-A single **`packages.xml.safety`** copy is kept in the module directory for crash-recovery only.
+The patch engine preserves the original file formatting byte-for-byte outside the user apps it patches, handles `packages.xml` whether it is written on one line or with attributes wrapped across lines, and repeated runs are byte-identical. A single **`packages.xml.safety`** copy is kept in the module directory for crash-recovery only.
+
+### Testing / regression harness
+
+`tools/bki_debug.sh` validates the real module functions against any `packages.xml` dump (e.g. one produced via `abx2xml`) without touching the live system:
+
+```sh
+BKI_PFD=/path/to/module/post-fs-data.sh \
+BKI_PFD_UN=/path/to/module/uninstall.sh \
+sh tools/bki_debug.sh packages.xml
+```
+
+It checks uid resolution, DB build/prune/update, patch semantics (including no duplicate attributes and well-formed output), end-to-end `process_xml`, byte-identical idempotency, and the uninstall restore round-trip. Expect `N passed, 0 failed`.
 
 ---
 
@@ -54,6 +66,8 @@ This module works automatically upon installation and reboot. No further user in
 
 When you remove the module and reboot, `uninstall.sh` automatically restores each app's original installation metadata from `metadata.db` before the module is cleaned up. If the DB is missing (e.g., manually deleted), restoration cannot occur and the patched values will remain in `packages.xml`.
 
+A safety copy of the pre-restore `packages.xml` is additionally kept in `/data/local/tmp/BKI_restore_backups/`.
+
 ---
 
 ## Logging
@@ -73,3 +87,4 @@ The module logs its activity to `/data/adb/modules/BetterKnownInstalled/BetterKn
 ## License
 
 This project is licensed under the terms of the GNU General Public License v3.0. See the [LICENSE](./LICENSE) file for details.
+
